@@ -29636,6 +29636,7 @@ var readSelfUsername2 = async (apiUrl, token) => {
   return userSchema3.parse(body).username;
 };
 var readBody = async (req) => {
+  req.setEncoding("utf8");
   let body = "";
   for await (const chunk of req) {
     body += String(chunk);

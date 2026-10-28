@@ -32,6 +32,9 @@ const readSelfUsername = async (apiUrl: string, token: string): Promise<string> 
 }
 
 const readBody = async (req: IncomingMessage): Promise<string> => {
+  // setEncoding runs a StringDecoder, which reassembles a multibyte UTF-8 character split across TCP
+  // chunks (e.g. accented text in a Hungarian MR title) — decoding each Buffer chunk alone corrupts it.
+  req.setEncoding('utf8')
   let body = ''
   for await (const chunk of req) {
     body += String(chunk)
