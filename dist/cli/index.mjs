@@ -29660,8 +29660,9 @@ var createHandler = (config2, secret) => async (req, res) => {
   let raw;
   try {
     raw = await readBody(req);
-  } catch {
-    respond(res, 413, "merge-risk: payload too large");
+  } catch (error62) {
+    if (error62 instanceof PayloadTooLargeError) respond(res, 413, "merge-risk: payload too large");
+    else respond(res, 400, "merge-risk: could not read request body");
     return;
   }
   let parsedBody;
@@ -29686,6 +29687,11 @@ var runWebhookServer = async () => {
   const policyPath = process.env["MERGE_RISK_POLICY"] ?? ".merge-risk.yml";
   const statusContext = process.env["MERGE_RISK_STATUS_CONTEXT"] ?? "merge-risk";
   const listenPort = Number(process.env["PORT"] ?? "3000");
+  if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) {
+    throw new Error(
+      `merge-risk: PORT must be a valid port number, got "${process.env["PORT"] ?? ""}"`
+    );
+  }
   const selfUsername = await readSelfUsername2(apiUrl, token);
   const config2 = {
     apiUrl,

@@ -80,10 +80,7 @@ describe('handleGitLabEvent — acting on an approval', () => {
       ],
       [(url) => url.includes('/diffs'), () => json([], { 'x-total': '1' })],
       [(url) => url.includes('/merge_requests/7/approvals'), () => json({ approved_by: [] })],
-      [
-        (url) => url.includes('/projects/42/approvals'),
-        () => json({ reset_approvals_on_push: true }),
-      ],
+      [(url) => url.includes('/versions'), () => json([])],
       [(url) => url.includes('/notes'), () => json([])],
       [(url) => url.includes('/external_status_checks'), () => json([])],
     ]

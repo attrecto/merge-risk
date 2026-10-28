@@ -48,6 +48,10 @@ const respond = (res: ServerResponse, status: number, message: string): void => 
   res.end(message)
 }
 
+// GitLab re-delivers a webhook on timeout/non-2xx, and the gate runs inline (several sequential API
+// calls) before responding, so a slow MR can be delivered twice. That is safe only because the gate is
+// idempotent — the commit status is keyed by head SHA and the report is update-if-changed — so a repeat
+// delivery re-converges rather than duplicating. Keep any side effect added here idempotent too.
 const createHandler =
   (config: WebhookConfig, secret: string) =>
   async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -63,8 +67,10 @@ const createHandler =
     let raw: string
     try {
       raw = await readBody(req)
-    } catch {
-      respond(res, 413, 'merge-risk: payload too large')
+    } catch (error) {
+      // Only an over-cap body is 413; a stream/socket error (reset, abort) is a client error, not that.
+      if (error instanceof PayloadTooLargeError) respond(res, 413, 'merge-risk: payload too large')
+      else respond(res, 400, 'merge-risk: could not read request body')
       return
     }
     let parsedBody: unknown
@@ -93,6 +99,12 @@ export const runWebhookServer = async (): Promise<void> => {
   const policyPath = process.env['MERGE_RISK_POLICY'] ?? '.merge-risk.yml'
   const statusContext = process.env['MERGE_RISK_STATUS_CONTEXT'] ?? 'merge-risk'
   const listenPort = Number(process.env['PORT'] ?? '3000')
+  // A typo'd PORT would otherwise be NaN → listen on a random port → a silently unreachable server.
+  if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) {
+    throw new Error(
+      `merge-risk: PORT must be a valid port number, got "${process.env['PORT'] ?? ''}"`,
+    )
+  }
 
   const selfUsername = await readSelfUsername(apiUrl, token)
   const config: WebhookConfig = {
