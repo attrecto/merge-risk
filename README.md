@@ -194,10 +194,27 @@ The job reads the merge request from GitLab's predefined CI variables (`CI_API_V
 `CI_PROJECT_ID` — and `CI_MERGE_REQUEST_IID`). `MERGE_RISK_POLICY` and `MERGE_RISK_STATUS_CONTEXT`
 override the policy path and status name.
 
+### Webhook (optional) — react to approvals
+
+A GitLab approval doesn't start a pipeline, so by itself the CI job's status stays `pending` until
+the job is re-run. Run the listener to close that gap — it re-runs the gate the moment an approval
+lands:
+
+```sh
+MERGE_RISK_API_URL=https://gitlab.com/api/v4 \
+  MERGE_RISK_TOKEN=… MERGE_RISK_WEBHOOK_SECRET=… \
+  npx @attrectodev/merge-risk@v0 gitlab-webhook
+```
+
+Point a project (or group) **Merge request events** webhook at it, with the same secret token. It
+only reacts to approval-class actions (a push is already covered by the CI job) and never creates
+the first report (the CI job owns that), so the two can't collide. `PORT` defaults to 3000.
+
 ### Known limits (GitLab)
 
-- **An approval doesn't re-run the pipeline.** Until a webhook listener is added, a `pending` job
-  stays red until it's retried after the approval lands — re-run the job (or push) to turn it green.
+- **Without the webhook, an approval doesn't re-run the pipeline.** A `pending` job stays red until
+  it's retried after the approval lands — run the job again (or push) to turn it green, or run the
+  webhook listener above.
 - **Approval counts, not rules, come from the gate.** merge-risk reads the approvals API (available
   on every tier) and enforces the per-tier count itself, so it works without GitLab's paid approval
   rules.

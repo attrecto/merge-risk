@@ -147,4 +147,28 @@ describe('createGate', () => {
       }),
     ])
   })
+
+  it('in update-only mode refreshes an existing report but never creates the first one', async () => {
+    const fake = createFakeGitHub({
+      contents: { 'base-sha': { '.merge-risk.yml': policyYaml(1) } },
+      files: [changedFile('src/a.ts')],
+    })
+    const base = {
+      port: fake.port,
+      policyPath: '.merge-risk.yml',
+      workflowPath: '.github/workflows/merge-risk.yml',
+      statusContext: 'merge-risk',
+    }
+    const updateOnly = createGate({ ...base, reportMode: 'update-only' })
+    await updateOnly.run(PR)
+    expect(fake.state.comments).toEqual([])
+
+    // A normal (create-or-update) run seeds the report; a later update-only run edits it in place.
+    await createGate(base).run(PR)
+    expect(fake.state.comments).toHaveLength(1)
+    fake.state.files = [changedFile('docs/a.md')]
+    await updateOnly.run(PR)
+    expect(fake.state.comments).toHaveLength(1)
+    expect(fake.state.comments[0]?.body).toContain('## Merge risk: `safe`')
+  })
 })
