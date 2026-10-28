@@ -29572,11 +29572,7 @@ var runGitLabGate = async () => {
 var webhookSchema = external_exports.object({
   object_kind: external_exports.string(),
   project: external_exports.object({ id: external_exports.number() }),
-  object_attributes: external_exports.object({
-    iid: external_exports.number(),
-    action: external_exports.string().optional(),
-    oldrev: external_exports.string().nullable().optional()
-  }).optional()
+  object_attributes: external_exports.object({ iid: external_exports.number(), action: external_exports.string().optional() }).optional()
 });
 var APPROVAL_ACTIONS = /* @__PURE__ */ new Set([
   "approved",
@@ -29617,8 +29613,18 @@ var handleGitLabEvent = async (body, config2) => {
 };
 
 // src/gitlab/webhook-server.ts
+import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 var userSchema3 = external_exports.object({ username: external_exports.string() });
+var MAX_BODY_BYTES = 1e6;
+var tokenMatches = (header, secret) => {
+  if (typeof header !== "string") return false;
+  const given = Buffer.from(header);
+  const want = Buffer.from(secret);
+  return given.length === want.length && timingSafeEqual(given, want);
+};
+var PayloadTooLargeError = class extends Error {
+};
 var required3 = (name, value) => {
   if (value === void 0 || value === "") throw new Error(`merge-risk: ${name} is required`);
   return value;
@@ -29631,7 +29637,10 @@ var readSelfUsername2 = async (apiUrl, token) => {
 };
 var readBody = async (req) => {
   let body = "";
-  for await (const chunk of req) body += String(chunk);
+  for await (const chunk of req) {
+    body += String(chunk);
+    if (body.length > MAX_BODY_BYTES) throw new PayloadTooLargeError();
+  }
   return body;
 };
 var respond = (res, status, message) => {
@@ -29643,12 +29652,25 @@ var createHandler = (config2, secret) => async (req, res) => {
     respond(res, 405, "merge-risk: POST only");
     return;
   }
-  if (req.headers["x-gitlab-token"] !== secret) {
+  if (!tokenMatches(req.headers["x-gitlab-token"], secret)) {
     respond(res, 401, "merge-risk: invalid token");
     return;
   }
+  let raw;
   try {
-    const parsedBody = JSON.parse(await readBody(req));
+    raw = await readBody(req);
+  } catch {
+    respond(res, 413, "merge-risk: payload too large");
+    return;
+  }
+  let parsedBody;
+  try {
+    parsedBody = JSON.parse(raw);
+  } catch {
+    respond(res, 400, "merge-risk: invalid JSON");
+    return;
+  }
+  try {
     const result = await handleGitLabEvent(parsedBody, config2);
     respond(res, result.status, result.message);
   } catch (error62) {

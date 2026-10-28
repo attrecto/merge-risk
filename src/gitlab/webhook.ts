@@ -6,13 +6,7 @@ import { z } from 'zod'
 const webhookSchema = z.object({
   object_kind: z.string(),
   project: z.object({ id: z.number() }),
-  object_attributes: z
-    .object({
-      iid: z.number(),
-      action: z.string().optional(),
-      oldrev: z.string().nullable().optional(),
-    })
-    .optional(),
+  object_attributes: z.object({ iid: z.number(), action: z.string().optional() }).optional(),
 })
 
 export type WebhookConfig = {

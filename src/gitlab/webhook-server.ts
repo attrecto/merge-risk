@@ -1,9 +1,23 @@
 import { handleGitLabEvent, type WebhookConfig } from './webhook.ts'
 
+import { timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
 
 const userSchema = z.object({ username: z.string() })
+
+// GitLab MR webhook payloads are small (a few KB); cap well above that and reject the rest.
+const MAX_BODY_BYTES = 1_000_000
+
+// Constant-time secret check so a wrong token can't be recovered by timing the response (CWE-208).
+const tokenMatches = (header: string | string[] | undefined, secret: string): boolean => {
+  if (typeof header !== 'string') return false
+  const given = Buffer.from(header)
+  const want = Buffer.from(secret)
+  return given.length === want.length && timingSafeEqual(given, want)
+}
+
+class PayloadTooLargeError extends Error {}
 
 const required = (name: string, value: string | undefined): string => {
   if (value === undefined || value === '') throw new Error(`merge-risk: ${name} is required`)
@@ -19,7 +33,10 @@ const readSelfUsername = async (apiUrl: string, token: string): Promise<string> 
 
 const readBody = async (req: IncomingMessage): Promise<string> => {
   let body = ''
-  for await (const chunk of req) body += String(chunk)
+  for await (const chunk of req) {
+    body += String(chunk)
+    if (body.length > MAX_BODY_BYTES) throw new PayloadTooLargeError()
+  }
   return body
 }
 
@@ -36,12 +53,25 @@ const createHandler =
       return
     }
     // Access control: only GitLab, which knows the shared secret, may trigger a re-evaluation.
-    if (req.headers['x-gitlab-token'] !== secret) {
+    if (!tokenMatches(req.headers['x-gitlab-token'], secret)) {
       respond(res, 401, 'merge-risk: invalid token')
       return
     }
+    let raw: string
     try {
-      const parsedBody: unknown = JSON.parse(await readBody(req))
+      raw = await readBody(req)
+    } catch {
+      respond(res, 413, 'merge-risk: payload too large')
+      return
+    }
+    let parsedBody: unknown
+    try {
+      parsedBody = JSON.parse(raw)
+    } catch {
+      respond(res, 400, 'merge-risk: invalid JSON')
+      return
+    }
+    try {
       const result = await handleGitLabEvent(parsedBody, config)
       respond(res, result.status, result.message)
     } catch (error) {
