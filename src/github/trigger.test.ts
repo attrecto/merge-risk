@@ -13,26 +13,19 @@ describe('triggerFromEvent', () => {
   })
 
   it('takes the head commit from a workflow_run event', () => {
+    // A review on a fork PR reports the base repository as the head repository.
     const payload = {
       workflow_run: {
-        head_repository: { owner: { login: 'contributor' } },
+        head_repository: { owner: { login: 'attrecto' } },
         head_branch: 'fix/typo',
         head_sha: 'abc123',
       },
     }
-    expect(triggerFromEvent('workflow_run', payload)).toEqual({
-      kind: 'commit',
-      headOwner: 'contributor',
-      headBranch: 'fix/typo',
-      headSha: 'abc123',
-    })
+    expect(triggerFromEvent('workflow_run', payload)).toEqual({ kind: 'commit', headSha: 'abc123' })
   })
 
-  it('rejects a workflow_run whose head repository is gone', () => {
-    const payload = {
-      workflow_run: { head_repository: null, head_branch: 'fix/typo', head_sha: 'abc123' },
-    }
-    expect(() => triggerFromEvent('workflow_run', payload)).toThrow(/head repository/)
+  it('rejects a workflow_run without a head commit', () => {
+    expect(() => triggerFromEvent('workflow_run', { workflow_run: {} })).toThrow(/head commit/)
   })
 
   it('rejects other events and events without a PR', () => {

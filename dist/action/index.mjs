@@ -49157,14 +49157,11 @@ var unsupported = (eventName) => new Error(`merge-risk runs on ${SUPPORTED_EVENT
 var triggerFromEvent = (eventName, payload) => {
   if (!SUPPORTED_EVENTS.includes(eventName)) throw unsupported(eventName);
   if (eventName === "workflow_run") {
-    const run = field(payload, "workflow_run");
-    const headOwner = field(field(field(run, "head_repository"), "owner"), "login");
-    const headBranch = field(run, "head_branch");
-    const headSha = field(run, "head_sha");
-    if (typeof headOwner !== "string" || typeof headBranch !== "string" || typeof headSha !== "string") {
-      throw new Error("merge-risk: the workflow_run event names no head repository and branch");
+    const headSha = field(field(payload, "workflow_run"), "head_sha");
+    if (typeof headSha !== "string") {
+      throw new Error("merge-risk: the workflow_run event names no head commit");
     }
-    return { kind: "commit", headOwner, headBranch, headSha };
+    return { kind: "commit", headSha };
   }
   const number4 = field(field(payload, "pull_request"), "number");
   if (typeof number4 !== "number") throw unsupported(eventName);
@@ -53841,7 +53838,6 @@ var pullRequestNumbers = async (octokit, trigger) => {
   const pulls = await octokit.paginate(octokit.rest.pulls.list, {
     ...context2.repo,
     state: "open",
-    head: `${trigger.headOwner}:${trigger.headBranch}`,
     per_page: 100
   });
   return pullRequestsAtCommit(pulls, trigger.headSha);

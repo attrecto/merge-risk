@@ -103,10 +103,7 @@ onto someone else's PR can still approve it.
      statuses: write
 
    concurrency:
-     group:
-       merge-risk-${{ github.event.pull_request.number || format('{0}:{1}',
-       github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch)
-       }}
+     group: merge-risk-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
      cancel-in-progress: true
 
    jobs:

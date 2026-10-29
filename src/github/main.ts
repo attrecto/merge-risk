@@ -8,13 +8,12 @@ import { context, getOctokit } from '@actions/github'
 
 type Octokit = ReturnType<typeof getOctokit>
 
-// A fork's PRs are absent from the workflow_run payload, so they are looked up by head branch.
+// A fork's PRs are absent from the workflow_run payload, so they are found among the open PRs.
 const pullRequestNumbers = async (octokit: Octokit, trigger: Trigger): Promise<number[]> => {
   if (trigger.kind === 'pull-request') return [trigger.number]
   const pulls = await octokit.paginate(octokit.rest.pulls.list, {
     ...context.repo,
     state: 'open',
-    head: `${trigger.headOwner}:${trigger.headBranch}`,
     per_page: 100,
   })
   return pullRequestsAtCommit(pulls, trigger.headSha)
