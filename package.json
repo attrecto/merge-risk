@@ -1,6 +1,6 @@
 {
   "name": "@attrectodev/merge-risk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Scores a pull request's merge risk and gates the merge on the review its tier requires.",
   "license": "MIT",
   "keywords": [
