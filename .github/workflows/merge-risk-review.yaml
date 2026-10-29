@@ -1,0 +1,16 @@
+name: merge-risk review
+
+# Review runs on fork PRs get a read-only token whatever this file asks for, so this one only marks
+# that a review happened. Its completion starts merge-risk.yaml through workflow_run, which runs
+# from the default branch with write access and scores the PR.
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+permissions: {}
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "merge-risk scores this review in the run this one starts."

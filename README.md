@@ -84,7 +84,7 @@ onto someone else's PR can still approve it.
 ## GitHub setup
 
 1. Add `.merge-risk.yml` to the default branch.
-2. Add the workflow:
+2. Add the gate workflow, `.github/workflows/merge-risk.yml`:
 
    ```yaml
    name: merge-risk
@@ -92,8 +92,9 @@ onto someone else's PR can still approve it.
    on:
      pull_request_target:
        types: [opened, synchronize, reopened, edited, ready_for_review]
-     pull_request_review:
-       types: [submitted, edited, dismissed]
+     workflow_run:
+       workflows: [merge-risk review]
+       types: [completed]
 
    permissions:
      contents: read
@@ -102,7 +103,10 @@ onto someone else's PR can still approve it.
      statuses: write
 
    concurrency:
-     group: merge-risk-${{ github.event.pull_request.number }}
+     group:
+       merge-risk-${{ github.event.pull_request.number || format('{0}:{1}',
+       github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch)
+       }}
      cancel-in-progress: true
 
    jobs:
@@ -112,7 +116,28 @@ onto someone else's PR can still approve it.
          - uses: attrecto/merge-risk@v0
    ```
 
-   The workflow never checks out the PR's code; it reads the diff through the API.
+   And the review relay, `.github/workflows/merge-risk-review.yml`:
+
+   ```yaml
+   name: merge-risk review
+
+   on:
+     pull_request_review:
+       types: [submitted, edited, dismissed]
+
+   permissions: {}
+
+   jobs:
+     relay:
+       runs-on: ubuntu-latest
+       steps:
+         - run: echo "merge-risk scores this review in the run this one starts."
+   ```
+
+   A review run on a fork PR gets a read-only token whatever the workflow asks for, so the relay
+   only records that a review happened. Its completion starts the gate through `workflow_run`, which
+   runs from the default branch with write access. The gate workflow never checks out the PR's code;
+   it reads the diff through the API.
 
 3. Protect the default branch with a ruleset that requires the `merge-risk` status. Leave the
    ruleset's own required approvals at 0, since the gate decides how many a PR needs. Keep the
@@ -122,14 +147,12 @@ onto someone else's PR can still approve it.
 ### Known limits
 
 - **The gate stops mistakes, not a malicious writer.** A commit status can be posted by anyone with
-  write access: with a personal token, or from a workflow a PR adds or edits (`pull_request_review`
-  runs take the workflow file from the PR). The latest status for a context is the one that counts,
-  so a forged `success` wins. Posting the status from a dedicated GitHub App, and requiring that app
-  as the status's source, would close this.
+  write access: with a personal token, or from a workflow a PR adds or edits (`pull_request` and
+  `pull_request_review` runs take the workflow file from the PR). The latest status for a context is
+  the one that counts, so a forged `success` wins. Posting the status from a dedicated GitHub App,
+  and requiring that app as the status's source, would close this.
 - **Use `GITHUB_TOKEN` or a GitHub App token.** The gate finds its own report comment by the marker
   on a bot's comment. Under a personal token it would post a new comment on every run.
-- **Fork PRs don't pick up approvals.** Review runs from forks get a read-only token, so the status
-  stays as it was until the next push re-runs the gate.
 - **The gate must be a workflow of its own.** In a reusable workflow, the protected file is the
   caller, not the reusable workflow that holds the gate.
 - **The gate checks that a review happened, not how deep it went.**

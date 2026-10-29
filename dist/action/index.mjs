@@ -7355,8 +7355,8 @@ var require_cst_visit = __commonJS({
     visit2.REMOVE = REMOVE;
     visit2.itemAtPath = (cst, path) => {
       let item = cst;
-      for (const [field, index] of path) {
-        const tok = item?.[field];
+      for (const [field2, index] of path) {
+        const tok = item?.[field2];
         if (tok && "items" in tok) {
           item = tok.items[index];
         } else
@@ -7366,8 +7366,8 @@ var require_cst_visit = __commonJS({
     };
     visit2.parentCollection = (cst, path) => {
       const parent = visit2.itemAtPath(cst, path.slice(0, -1));
-      const field = path[path.length - 1][0];
-      const coll = parent?.[field];
+      const field2 = path[path.length - 1][0];
+      const coll = parent?.[field2];
       if (coll && "items" in coll)
         return coll;
       throw new Error("Parent collection not found");
@@ -7376,11 +7376,11 @@ var require_cst_visit = __commonJS({
       let ctrl = visitor(item, path);
       if (typeof ctrl === "symbol")
         return ctrl;
-      for (const field of ["key", "value"]) {
-        const token = item[field];
+      for (const field2 of ["key", "value"]) {
+        const token = item[field2];
         if (token && "items" in token) {
           for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path.concat([[field, i]])), token.items[i], visitor);
+            const ci = _visit(Object.freeze(path.concat([[field2, i]])), token.items[i], visitor);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -7390,7 +7390,7 @@ var require_cst_visit = __commonJS({
               i -= 1;
             }
           }
-          if (typeof ctrl === "function" && field === "key")
+          if (typeof ctrl === "function" && field2 === "key")
             ctrl = ctrl(item, path);
         }
       }
@@ -27429,12 +27429,12 @@ var require_eventsource_stream = __commonJS({
       }
       return true;
     }
-    function isFieldName(line, length, field) {
-      if (length !== field.length) {
+    function isFieldName(line, length, field2) {
+      if (length !== field2.length) {
         return false;
       }
       for (let i = 0; i < length; i++) {
-        if (line[i] !== field[i]) {
+        if (line[i] !== field2[i]) {
           return false;
         }
       }
@@ -32819,14 +32819,14 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     const shape = zod.def.shape;
     const propValues = {};
     for (const key in shape) {
-      const field = shape[key]._zod;
-      if (field.values) {
+      const field2 = shape[key]._zod;
+      if (field2.values) {
         if (!Object.prototype.hasOwnProperty.call(propValues, key)) {
           assignProp(propValues, key, /* @__PURE__ */ new Set());
         }
-        for (const v of field.values)
+        for (const v of field2.values)
           propValues[key].add(v);
-        if (field.optin !== void 0)
+        if (field2.optin !== void 0)
           propValues[key].add(void 0);
       }
     }
@@ -45764,8 +45764,8 @@ var objectProcessor = (schema, ctx, _json, params) => {
   }
   const requiredKeys = [];
   for (const key of Object.keys(shape)) {
-    const field = def.shape[key];
-    if (ctx.io === "input" ? inputOptin(field) === void 0 : field._zod.optout === void 0) {
+    const field2 = def.shape[key];
+    if (ctx.io === "input" ? inputOptin(field2) === void 0 : field2._zod.optout === void 0) {
       requiredKeys.push(key);
     }
   }
@@ -49144,6 +49144,33 @@ var createGitHubGate = ({
     }
   };
 };
+
+// src/github/trigger.ts
+var SUPPORTED_EVENTS = [
+  "pull_request",
+  "pull_request_target",
+  "pull_request_review",
+  "workflow_run"
+];
+var field = (value, key) => typeof value === "object" && value !== null && key in value ? value[key] : void 0;
+var unsupported = (eventName) => new Error(`merge-risk runs on ${SUPPORTED_EVENTS.join(", ")}; got ${eventName}`);
+var triggerFromEvent = (eventName, payload) => {
+  if (!SUPPORTED_EVENTS.includes(eventName)) throw unsupported(eventName);
+  if (eventName === "workflow_run") {
+    const run = field(payload, "workflow_run");
+    const headOwner = field(field(field(run, "head_repository"), "owner"), "login");
+    const headBranch = field(run, "head_branch");
+    const headSha = field(run, "head_sha");
+    if (typeof headOwner !== "string" || typeof headBranch !== "string" || typeof headSha !== "string") {
+      throw new Error("merge-risk: the workflow_run event names no head repository and branch");
+    }
+    return { kind: "commit", headOwner, headBranch, headSha };
+  }
+  const number4 = field(field(payload, "pull_request"), "number");
+  if (typeof number4 !== "number") throw unsupported(eventName);
+  return { kind: "pull-request", number: number4 };
+};
+var pullRequestsAtCommit = (pulls, headSha) => pulls.filter((pull) => pull.head.sha === headSha).map((pull) => pull.number);
 
 // src/github/workflow-path.ts
 var workflowPathFromRef = (ref) => {
@@ -53809,32 +53836,47 @@ function getOctokit(token, options, ...additionalPlugins) {
 }
 
 // src/github/main.ts
-var SUPPORTED_EVENTS = ["pull_request", "pull_request_target", "pull_request_review"];
-var pullRequestNumber = () => {
-  const pr = context2.payload.pull_request;
-  if (!SUPPORTED_EVENTS.includes(context2.eventName) || typeof pr !== "object" || pr === null || !("number" in pr) || typeof pr.number !== "number") {
-    throw new Error(`merge-risk runs on ${SUPPORTED_EVENTS.join(", ")}; got ${context2.eventName}`);
-  }
-  return pr.number;
+var pullRequestNumbers = async (octokit, trigger) => {
+  if (trigger.kind === "pull-request") return [trigger.number];
+  const pulls = await octokit.paginate(octokit.rest.pulls.list, {
+    ...context2.repo,
+    state: "open",
+    head: `${trigger.headOwner}:${trigger.headBranch}`,
+    per_page: 100
+  });
+  return pullRequestsAtCommit(pulls, trigger.headSha);
 };
 var main = async () => {
+  const trigger = triggerFromEvent(context2.eventName, context2.payload);
+  const octokit = getOctokit(getInput("github-token", { required: true }));
   const gate = createGitHubGate({
-    port: createGitHubPort(getOctokit(getInput("github-token", { required: true }))),
+    port: createGitHubPort(octokit),
     policyPath: getInput("policy-path", { required: true }),
     workflowPath: workflowPathFromRef(process.env["GITHUB_WORKFLOW_REF"]),
     statusContext: getInput("status-context", { required: true })
   });
-  const { tier, decision, superseded } = await gate.run({
-    ...context2.repo,
-    number: pullRequestNumber()
-  });
-  if (superseded) {
-    info("merge-risk: the PR changed during the run; the run for the new commit reports.");
+  const numbers = await pullRequestNumbers(octokit, trigger);
+  if (numbers.length === 0) {
+    info("merge-risk: no open PR is at the reviewed commit; nothing to score.");
     return;
   }
-  setOutput("tier", tier);
-  setOutput("state", decision.state);
-  info(`merge-risk: ${tier} (${decision.state}): ${decision.summary}`);
+  const runs = await Promise.all(
+    numbers.map(async (number4) => ({
+      number: number4,
+      ...await gate.run({ ...context2.repo, number: number4 })
+    }))
+  );
+  for (const { number: number4, tier, decision, superseded } of runs) {
+    if (superseded) {
+      info(
+        `merge-risk: #${number4} changed during the run; the run for the new commit reports.`
+      );
+      continue;
+    }
+    setOutput("tier", tier);
+    setOutput("state", decision.state);
+    info(`merge-risk: #${number4} ${tier} (${decision.state}): ${decision.summary}`);
+  }
 };
 main().catch((error63) => {
   setFailed(error63 instanceof Error ? error63.message : String(error63));

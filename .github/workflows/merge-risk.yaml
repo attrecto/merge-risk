@@ -1,12 +1,14 @@
 name: merge-risk
 
-# pull_request_target runs this file and the action as they are on the base branch, so a PR
-# can't rewrite the gate that judges it. Nothing here checks out or runs the PR's code.
+# pull_request_target and workflow_run run this file and the action as they are on the base or
+# default branch, so a PR can't rewrite the gate that judges it. Nothing here checks out or runs the PR's
+# code. Reviews come in through merge-risk-review.yaml, since a review run on a fork PR can't write.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, ready_for_review]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
+  workflow_run:
+    workflows: [merge-risk review]
+    types: [completed]
 
 permissions:
   contents: read
@@ -15,15 +17,18 @@ permissions:
   statuses: write
 
 concurrency:
-  group: merge-risk-${{ github.event.pull_request.number }}
+  group:
+    merge-risk-${{ github.event.pull_request.number || format('{0}:{1}',
+    github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) }}
   cancel-in-progress: true
 
 jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      # The base branch's copy of this repo, which is the action under test here.
+      # The base branch's copy of this repo, which is the action under test here. A workflow_run
+      # event carries no PR, so that run takes the default branch.
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
       - uses: ./
