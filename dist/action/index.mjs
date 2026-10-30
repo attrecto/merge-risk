@@ -48910,7 +48910,13 @@ var renderReport = ({ policy, assessment, decision }) => [
 var LABEL_PREFIX = "merge-risk:";
 var MAX_STATUS_DESCRIPTION = 140;
 var truncate2 = (text) => text.length > MAX_STATUS_DESCRIPTION ? `${text.slice(0, MAX_STATUS_DESCRIPTION - 1)}\u2026` : text;
-var createGate = ({ port, policyPath, workflowPath, statusContext }) => {
+var createGate = ({
+  port,
+  policyPath,
+  workflowPath,
+  statusContext,
+  reportMode = "create-or-update"
+}) => {
   const protectedPaths = workflowPath === void 0 ? [policyPath] : [policyPath, workflowPath];
   const loadPolicy = async (pr, pull) => {
     const text = await port.readFile(pr, policyPath, pull.baseSha);
@@ -48935,8 +48941,10 @@ var createGate = ({ port, policyPath, workflowPath, statusContext }) => {
     const existing = comments.find(
       (comment) => comment.isBot && comment.body.includes(REPORT_MARKER)
     );
-    if (existing === void 0) await port.createComment(pr, body);
-    else if (existing.body !== body) await port.updateComment(pr, existing.id, body);
+    if (existing === void 0) {
+      if (reportMode === "update-only") return;
+      await port.createComment(pr, body);
+    } else if (existing.body !== body) await port.updateComment(pr, existing.id, body);
   };
   const evaluate = async (pr, pull) => {
     const [policy, files, reviews] = await Promise.all([

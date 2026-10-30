@@ -10,12 +10,17 @@ export const LABEL_PREFIX = 'merge-risk:'
 
 const MAX_STATUS_DESCRIPTION = 140
 
+// 'update-only' edits an existing report but never creates the first one — for a re-run (e.g. a webhook
+// reacting to an approval) that could otherwise race the initial run and post a duplicate report.
+export type ReportMode = 'create-or-update' | 'update-only'
+
 export type GateConfig = {
   port: ReviewPort
   policyPath: string
   // The workflow file running the gate; editing it is as sensitive as editing the policy.
   workflowPath: string | undefined
   statusContext: string
+  reportMode?: ReportMode
 }
 
 export type GateRun = {
@@ -32,7 +37,13 @@ export type Gate = {
 const truncate = (text: string): string =>
   text.length > MAX_STATUS_DESCRIPTION ? `${text.slice(0, MAX_STATUS_DESCRIPTION - 1)}…` : text
 
-export const createGate = ({ port, policyPath, workflowPath, statusContext }: GateConfig): Gate => {
+export const createGate = ({
+  port,
+  policyPath,
+  workflowPath,
+  statusContext,
+  reportMode = 'create-or-update',
+}: GateConfig): Gate => {
   const protectedPaths = workflowPath === undefined ? [policyPath] : [policyPath, workflowPath]
 
   // Read from the base commit, never the head, so a PR can't loosen the policy that judges it.
@@ -63,8 +74,10 @@ export const createGate = ({ port, policyPath, workflowPath, statusContext }: Ga
     const existing = comments.find(
       (comment) => comment.isBot && comment.body.includes(REPORT_MARKER),
     )
-    if (existing === undefined) await port.createComment(pr, body)
-    else if (existing.body !== body) await port.updateComment(pr, existing.id, body)
+    if (existing === undefined) {
+      if (reportMode === 'update-only') return
+      await port.createComment(pr, body)
+    } else if (existing.body !== body) await port.updateComment(pr, existing.id, body)
   }
 
   const evaluate = async (pr: ChangeRef, pull: PullRequest): Promise<GateRun> => {

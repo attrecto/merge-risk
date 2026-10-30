@@ -194,10 +194,32 @@ The job reads the merge request from GitLab's predefined CI variables (`CI_API_V
 `CI_PROJECT_ID` — and `CI_MERGE_REQUEST_IID`). `MERGE_RISK_POLICY` and `MERGE_RISK_STATUS_CONTEXT`
 override the policy path and status name.
 
+### Webhook (optional) — react to approvals
+
+A GitLab approval doesn't start a pipeline, so by itself the CI job's status stays `pending` until
+the job is re-run. Run the listener to close that gap — it re-runs the gate the moment an approval
+lands:
+
+```sh
+MERGE_RISK_API_URL=https://gitlab.com/api/v4 \
+  MERGE_RISK_TOKEN=… MERGE_RISK_WEBHOOK_SECRET=… \
+  npx @attrectodev/merge-risk@v0 gitlab-webhook
+```
+
+Point a project (or group) **Merge request events** webhook at it, with the same secret token. It
+only reacts to approval-class actions (a push is already covered by the CI job) and never creates
+the first report (the CI job owns that), so the two can't collide. It acknowledges the delivery
+immediately (`202`) and runs the gate in the background, serialised per merge request, so a slow MR
+can't trip GitLab's webhook timeout. `MERGE_RISK_POLICY` and `MERGE_RISK_STATUS_CONTEXT` default to
+the same values as the CI gate (`.merge-risk.yml` and `merge-risk-verdict`) — set
+`MERGE_RISK_STATUS_CONTEXT` to **match the CI job's**, or the webhook updates a different status
+than the one the gate posts. `PORT` defaults to 3000.
+
 ### Known limits (GitLab)
 
-- **An approval doesn't re-run the pipeline.** Until a webhook listener is added, a `pending` job
-  stays red until it's retried after the approval lands — re-run the job (or push) to turn it green.
+- **Without the webhook, an approval doesn't re-run the pipeline.** A `pending` job stays red until
+  it's retried after the approval lands — run the job again (or push) to turn it green, or run the
+  webhook listener above.
 - **Approval counts, not rules, come from the gate.** merge-risk reads the approvals API (available
   on every tier) and enforces the per-tier count itself, so it works without GitLab's paid approval
   rules.
@@ -214,6 +236,12 @@ override the policy path and status name.
 - **A brand-new empty file scores very-risky.** GitLab withholds the diff of a too-large new file,
   which is indistinguishable from a genuinely empty new file (`.gitkeep`), so both are treated as
   unreadable — the safe direction, but it over-reports the rare empty add.
+- **A failed webhook gate run isn't retried.** The webhook ACKs with `202` and runs the gate in the
+  background (so a slow MR can't trip GitLab's delivery timeout), which means GitLab sees a success
+  and won't redeliver. If that background run then hits a transient GitLab API error it is logged
+  and dropped, leaving the status stale until the next approval event — or until the CI job runs.
+  The CI gate (which GitLab _does_ retry on failure) remains the backstop; the webhook only closes
+  the approval-doesn't-re-run-the-pipeline gap.
 
 ## Local preview
 

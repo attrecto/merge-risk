@@ -29110,7 +29110,13 @@ var renderReport = ({ policy, assessment, decision }) => [
 var LABEL_PREFIX = "merge-risk:";
 var MAX_STATUS_DESCRIPTION = 140;
 var truncate2 = (text) => text.length > MAX_STATUS_DESCRIPTION ? `${text.slice(0, MAX_STATUS_DESCRIPTION - 1)}\u2026` : text;
-var createGate = ({ port, policyPath, workflowPath, statusContext }) => {
+var createGate = ({
+  port,
+  policyPath,
+  workflowPath,
+  statusContext,
+  reportMode = "create-or-update"
+}) => {
   const protectedPaths = workflowPath === void 0 ? [policyPath] : [policyPath, workflowPath];
   const loadPolicy = async (pr, pull) => {
     const text = await port.readFile(pr, policyPath, pull.baseSha);
@@ -29135,8 +29141,10 @@ var createGate = ({ port, policyPath, workflowPath, statusContext }) => {
     const existing = comments.find(
       (comment) => comment.isBot && comment.body.includes(REPORT_MARKER)
     );
-    if (existing === void 0) await port.createComment(pr, body);
-    else if (existing.body !== body) await port.updateComment(pr, existing.id, body);
+    if (existing === void 0) {
+      if (reportMode === "update-only") return;
+      await port.createComment(pr, body);
+    } else if (existing.body !== body) await port.updateComment(pr, existing.id, body);
   };
   const evaluate = async (pr, pull) => {
     const [policy, files, reviews] = await Promise.all([
@@ -29180,6 +29188,18 @@ var createGate = ({ port, policyPath, workflowPath, statusContext }) => {
       }
     }
   };
+};
+
+// src/gitlab/env.ts
+var DEFAULT_POLICY_PATH = ".merge-risk.yml";
+var DEFAULT_STATUS_CONTEXT = "merge-risk-verdict";
+var required2 = (name, value) => {
+  if (value === void 0 || value === "") throw new Error(`merge-risk: ${name} is required`);
+  return value;
+};
+var envOr = (name, fallback) => {
+  const value = process.env[name];
+  return value === void 0 || value === "" ? fallback : value;
 };
 
 // src/core/unified-diff.ts
@@ -29502,14 +29522,6 @@ var createGitLabPort = ({
 
 // src/gitlab/main.ts
 var userSchema2 = external_exports.object({ username: external_exports.string() });
-var required2 = (name, value) => {
-  if (value === void 0 || value === "") throw new Error(`merge-risk: ${name} is required`);
-  return value;
-};
-var envOr = (name, fallback) => {
-  const value = process.env[name];
-  return value === void 0 || value === "" ? fallback : value;
-};
 var readSelfUsername = async (apiUrl, token) => {
   const res = await fetch(`${apiUrl}/user`, { headers: { "PRIVATE-TOKEN": token } });
   if (!res.ok) throw new Error(`merge-risk: could not read the token user (GitLab ${res.status})`);
@@ -29528,8 +29540,8 @@ var runGitLabGate = async () => {
     envOr("CI_MERGE_REQUEST_PROJECT_ID", process.env["CI_PROJECT_ID"] ?? "")
   );
   const token = required2("MERGE_RISK_TOKEN", process.env["MERGE_RISK_TOKEN"]);
-  const policyPath = envOr("MERGE_RISK_POLICY", ".merge-risk.yml");
-  const statusContext = envOr("MERGE_RISK_STATUS_CONTEXT", "merge-risk-verdict");
+  const policyPath = envOr("MERGE_RISK_POLICY", DEFAULT_POLICY_PATH);
+  const statusContext = envOr("MERGE_RISK_STATUS_CONTEXT", DEFAULT_STATUS_CONTEXT);
   const selfUsername = await readSelfUsername(apiUrl, token);
   const port = createGitLabPort({
     apiUrl,
@@ -29558,6 +29570,192 @@ var runGitLabGate = async () => {
   }
   console.log(`merge-risk: ${tier} (${decision.state}): ${decision.summary}`);
   process.exitCode = decision.state === "success" ? 0 : 1;
+};
+
+// src/gitlab/webhook.ts
+var webhookSchema = external_exports.object({
+  object_kind: external_exports.string(),
+  project: external_exports.object({ id: external_exports.number() }),
+  object_attributes: external_exports.object({ iid: external_exports.number(), action: external_exports.string().optional() }).optional()
+});
+var APPROVAL_ACTIONS = /* @__PURE__ */ new Set([
+  "approved",
+  "unapproved",
+  "approval",
+  "unapproval"
+]);
+var classifyGitLabEvent = (body) => {
+  const parsed = webhookSchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      kind: "ignore",
+      result: { status: 400, message: "merge-risk: unrecognised webhook payload" }
+    };
+  }
+  const event = parsed.data;
+  if (event.object_kind !== "merge_request" || event.object_attributes === void 0) {
+    return {
+      kind: "ignore",
+      result: { status: 200, message: "merge-risk: ignored (not a merge request event)" }
+    };
+  }
+  const action = event.object_attributes.action;
+  if (action === void 0 || !APPROVAL_ACTIONS.has(action)) {
+    return {
+      kind: "ignore",
+      result: {
+        status: 200,
+        message: `merge-risk: ignored (action "${action ?? "none"}" is covered by the CI job)`
+      }
+    };
+  }
+  const projectId = String(event.project.id);
+  const iid = event.object_attributes.iid;
+  return { kind: "run", projectId, iid, key: `${projectId}:${iid}` };
+};
+var handleGitLabEvent = async (body, config2) => {
+  const classified = classifyGitLabEvent(body);
+  if (classified.kind === "ignore") return classified.result;
+  const port = createGitLabPort({
+    apiUrl: config2.apiUrl,
+    projectId: classified.projectId,
+    token: config2.token,
+    selfUsername: config2.selfUsername,
+    warn: config2.warn
+  });
+  const gate = createGate({
+    port,
+    policyPath: config2.policyPath,
+    workflowPath: ".gitlab-ci.yml",
+    statusContext: config2.statusContext,
+    reportMode: "update-only"
+  });
+  const run2 = await gate.run({ owner: "", repo: "", number: classified.iid });
+  return { status: 200, message: `merge-risk: ${run2.tier} (${run2.decision.state})` };
+};
+
+// src/gitlab/webhook-server.ts
+import { timingSafeEqual } from "node:crypto";
+import { createServer } from "node:http";
+var userSchema3 = external_exports.object({ username: external_exports.string() });
+var MAX_BODY_BYTES = 1e6;
+var tokenMatches = (header, secret) => {
+  if (typeof header !== "string") return false;
+  const given = Buffer.from(header);
+  const want = Buffer.from(secret);
+  return given.length === want.length && timingSafeEqual(given, want);
+};
+var PayloadTooLargeError = class extends Error {
+};
+var logError = (error62) => {
+  console.error(error62 instanceof Error ? error62.message : String(error62));
+};
+var readSelfUsername2 = async (apiUrl, token) => {
+  const res = await fetch(`${apiUrl}/user`, { headers: { "PRIVATE-TOKEN": token } });
+  if (!res.ok) throw new Error(`merge-risk: could not read the token user (GitLab ${res.status})`);
+  const body = await res.json();
+  return userSchema3.parse(body).username;
+};
+var readBody = async (req) => {
+  req.setEncoding("utf8");
+  let body = "";
+  for await (const chunk of req) {
+    body += String(chunk);
+    if (body.length > MAX_BODY_BYTES) throw new PayloadTooLargeError();
+  }
+  return body;
+};
+var respond = (res, status, message) => {
+  res.writeHead(status, { "content-type": "text/plain" });
+  res.end(message);
+};
+var createSerialQueue = () => {
+  const chains = /* @__PURE__ */ new Map();
+  return (key, task) => {
+    const prev = chains.get(key) ?? Promise.resolve();
+    const next = prev.then(task).catch(logError).finally(() => {
+      if (chains.get(key) === next) chains.delete(key);
+    });
+    chains.set(key, next);
+  };
+};
+var createHandler = (config2, secret, runEvent = handleGitLabEvent) => {
+  const enqueue = createSerialQueue();
+  return async (req, res) => {
+    if (req.method !== "POST") {
+      respond(res, 405, "merge-risk: POST only");
+      return;
+    }
+    if (!tokenMatches(req.headers["x-gitlab-token"], secret)) {
+      respond(res, 401, "merge-risk: invalid token");
+      return;
+    }
+    let raw;
+    try {
+      raw = await readBody(req);
+    } catch (error62) {
+      if (error62 instanceof PayloadTooLargeError) respond(res, 413, "merge-risk: payload too large");
+      else respond(res, 400, "merge-risk: could not read request body");
+      return;
+    }
+    let parsedBody;
+    try {
+      parsedBody = JSON.parse(raw);
+    } catch {
+      respond(res, 400, "merge-risk: invalid JSON");
+      return;
+    }
+    const classified = classifyGitLabEvent(parsedBody);
+    if (classified.kind === "ignore") {
+      respond(res, classified.result.status, classified.result.message);
+      return;
+    }
+    respond(res, 202, `merge-risk: accepted, re-evaluating !${classified.iid}`);
+    enqueue(classified.key, async () => {
+      await runEvent(parsedBody, config2);
+    });
+  };
+};
+var runWebhookServer = async () => {
+  const apiUrl = required2("MERGE_RISK_API_URL", process.env["MERGE_RISK_API_URL"]);
+  const token = required2("MERGE_RISK_TOKEN", process.env["MERGE_RISK_TOKEN"]);
+  const secret = required2("MERGE_RISK_WEBHOOK_SECRET", process.env["MERGE_RISK_WEBHOOK_SECRET"]);
+  const policyPath = envOr("MERGE_RISK_POLICY", DEFAULT_POLICY_PATH);
+  const statusContext = envOr("MERGE_RISK_STATUS_CONTEXT", DEFAULT_STATUS_CONTEXT);
+  const listenPort = Number(envOr("PORT", "3000"));
+  if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
+    throw new Error(
+      `merge-risk: PORT must be a valid port number, got "${process.env["PORT"] ?? ""}"`
+    );
+  }
+  const selfUsername = await readSelfUsername2(apiUrl, token);
+  const config2 = {
+    apiUrl,
+    token,
+    selfUsername,
+    policyPath,
+    statusContext,
+    warn: (message) => {
+      console.warn(message);
+    }
+  };
+  const listener = createHandler(config2, secret);
+  const server = createServer((req, res) => {
+    void listener(req, res).catch((error62) => {
+      logError(error62);
+      if (!res.headersSent) respond(res, 500, "merge-risk: webhook error");
+    });
+  });
+  server.listen(listenPort, () => {
+    console.log(`merge-risk: webhook listening on :${listenPort}`);
+  });
+  const shutdown = () => {
+    server.close(() => {
+      process.exitCode = 0;
+    });
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
 };
 
 // src/cli/evaluate.ts
@@ -29661,14 +29859,19 @@ var runEvaluate = async (argv) => {
 var USAGE = `Usage: merge-risk <command> [options]
 
 Commands:
-  evaluate       Score the current branch's committed changes locally (preview).
-  gitlab-gate    Run the gate on a GitLab merge request from inside a CI job (reads CI_* env).
+  evaluate         Score the current branch's committed changes locally (preview).
+  gitlab-gate      Run the gate on a GitLab merge request from inside a CI job (reads CI_* env).
+  gitlab-webhook   Start the webhook listener that re-runs the gate on approval events.
 
 ${EVALUATE_USAGE}`;
 var main = async () => {
   const command = process.argv[2];
   if (command === "gitlab-gate") {
     await runGitLabGate();
+    return;
+  }
+  if (command === "gitlab-webhook") {
+    await runWebhookServer();
     return;
   }
   if (command === "evaluate") {
