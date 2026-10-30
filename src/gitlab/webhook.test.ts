@@ -1,4 +1,4 @@
-import { handleGitLabEvent, type WebhookConfig } from './webhook.ts'
+import { classifyGitLabEvent, handleGitLabEvent, type WebhookConfig } from './webhook.ts'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -40,6 +40,29 @@ describe('handleGitLabEvent — filtering', () => {
 
   it('rejects an unrecognised payload', async () => {
     expect((await handleGitLabEvent({ nope: true }, config())).status).toBe(400)
+  })
+})
+
+describe('classifyGitLabEvent', () => {
+  it('flags an approval for a run, keyed by project+MR', () => {
+    const result = classifyGitLabEvent(mrEvent('approved'))
+    expect(result).toEqual({ kind: 'run', projectId: '42', iid: 7, key: '42:7' })
+  })
+
+  it('ignores a push-carrying update (covered by the CI job) without a network call', () => {
+    const result = classifyGitLabEvent(mrEvent('update', { oldrev: 'abc123' }))
+    expect(result.kind).toBe('ignore')
+    expect(result.kind === 'ignore' && result.result.message).toContain('covered by the CI job')
+  })
+
+  it('ignores a non-merge-request event', () => {
+    const result = classifyGitLabEvent({ object_kind: 'push', project: { id: 42 } })
+    expect(result.kind === 'ignore' && result.result.message).toContain('not a merge request')
+  })
+
+  it('ignores an unrecognised payload with a 400 reply', () => {
+    const result = classifyGitLabEvent({ nope: true })
+    expect(result.kind === 'ignore' && result.result.status).toBe(400)
   })
 })
 

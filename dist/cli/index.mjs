@@ -25007,7 +25007,7 @@ function foldObjects(members2) {
     objects.push(member);
   }
   const properties = {};
-  const required4 = /* @__PURE__ */ new Set();
+  const required3 = /* @__PURE__ */ new Set();
   for (const object2 of objects) {
     for (const key in object2.properties) {
       if (Object.prototype.hasOwnProperty.call(properties, key))
@@ -25024,11 +25024,11 @@ function foldObjects(members2) {
       assignProp(properties, key, merged);
     }
     for (const key of object2.required ?? [])
-      required4.add(key);
+      required3.add(key);
   }
   const folded = { type: "object", properties };
-  if (required4.size)
-    folded.required = [...required4];
+  if (required3.size)
+    folded.required = [...required3];
   if (objects.every((object2) => object2.additionalProperties === false)) {
     folded.additionalProperties = false;
   } else {
@@ -29019,16 +29019,16 @@ var latestVerdicts = (reviews) => [
   ...reviews.filter((review) => review.state !== "commented").reduce((latest, review) => latest.set(review.reviewer, review), /* @__PURE__ */ new Map()).values()
 ];
 var plural2 = (count, noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-var summarize = (required4, approvedBy, blockers) => {
-  const base = { requiredApprovals: required4, approvedBy, changesRequestedBy: blockers };
+var summarize = (required3, approvedBy, blockers) => {
+  const base = { requiredApprovals: required3, approvedBy, changesRequestedBy: blockers };
   if (blockers.length > 0) {
     return { ...base, state: "failure", summary: `Changes requested by ${blockers.join(", ")}` };
   }
-  const missing = required4 - approvedBy.length;
+  const missing = required3 - approvedBy.length;
   if (missing > 0) {
     return { ...base, state: "pending", summary: `Needs ${plural2(missing, "more approval")}` };
   }
-  const summary = required4 === 0 ? "No review required" : `Approved by ${approvedBy.join(", ")}`;
+  const summary = required3 === 0 ? "No review required" : `Approved by ${approvedBy.join(", ")}`;
   return { ...base, state: "success", summary };
 };
 var decideGate = (input2) => {
@@ -29188,6 +29188,18 @@ var createGate = ({
       }
     }
   };
+};
+
+// src/gitlab/env.ts
+var DEFAULT_POLICY_PATH = ".merge-risk.yml";
+var DEFAULT_STATUS_CONTEXT = "merge-risk-verdict";
+var required2 = (name, value) => {
+  if (value === void 0 || value === "") throw new Error(`merge-risk: ${name} is required`);
+  return value;
+};
+var envOr = (name, fallback) => {
+  const value = process.env[name];
+  return value === void 0 || value === "" ? fallback : value;
 };
 
 // src/core/unified-diff.ts
@@ -29510,14 +29522,6 @@ var createGitLabPort = ({
 
 // src/gitlab/main.ts
 var userSchema2 = external_exports.object({ username: external_exports.string() });
-var required2 = (name, value) => {
-  if (value === void 0 || value === "") throw new Error(`merge-risk: ${name} is required`);
-  return value;
-};
-var envOr = (name, fallback) => {
-  const value = process.env[name];
-  return value === void 0 || value === "" ? fallback : value;
-};
 var readSelfUsername = async (apiUrl, token) => {
   const res = await fetch(`${apiUrl}/user`, { headers: { "PRIVATE-TOKEN": token } });
   if (!res.ok) throw new Error(`merge-risk: could not read the token user (GitLab ${res.status})`);
@@ -29536,8 +29540,8 @@ var runGitLabGate = async () => {
     envOr("CI_MERGE_REQUEST_PROJECT_ID", process.env["CI_PROJECT_ID"] ?? "")
   );
   const token = required2("MERGE_RISK_TOKEN", process.env["MERGE_RISK_TOKEN"]);
-  const policyPath = envOr("MERGE_RISK_POLICY", ".merge-risk.yml");
-  const statusContext = envOr("MERGE_RISK_STATUS_CONTEXT", "merge-risk-verdict");
+  const policyPath = envOr("MERGE_RISK_POLICY", DEFAULT_POLICY_PATH);
+  const statusContext = envOr("MERGE_RISK_STATUS_CONTEXT", DEFAULT_STATUS_CONTEXT);
   const selfUsername = await readSelfUsername(apiUrl, token);
   const port = createGitLabPort({
     apiUrl,
@@ -29580,23 +29584,41 @@ var APPROVAL_ACTIONS = /* @__PURE__ */ new Set([
   "approval",
   "unapproval"
 ]);
-var handleGitLabEvent = async (body, config2) => {
+var classifyGitLabEvent = (body) => {
   const parsed = webhookSchema.safeParse(body);
-  if (!parsed.success) return { status: 400, message: "merge-risk: unrecognised webhook payload" };
+  if (!parsed.success) {
+    return {
+      kind: "ignore",
+      result: { status: 400, message: "merge-risk: unrecognised webhook payload" }
+    };
+  }
   const event = parsed.data;
   if (event.object_kind !== "merge_request" || event.object_attributes === void 0) {
-    return { status: 200, message: "merge-risk: ignored (not a merge request event)" };
+    return {
+      kind: "ignore",
+      result: { status: 200, message: "merge-risk: ignored (not a merge request event)" }
+    };
   }
   const action = event.object_attributes.action;
   if (action === void 0 || !APPROVAL_ACTIONS.has(action)) {
     return {
-      status: 200,
-      message: `merge-risk: ignored (action "${action ?? "none"}" is covered by the CI job)`
+      kind: "ignore",
+      result: {
+        status: 200,
+        message: `merge-risk: ignored (action "${action ?? "none"}" is covered by the CI job)`
+      }
     };
   }
+  const projectId = String(event.project.id);
+  const iid = event.object_attributes.iid;
+  return { kind: "run", projectId, iid, key: `${projectId}:${iid}` };
+};
+var handleGitLabEvent = async (body, config2) => {
+  const classified = classifyGitLabEvent(body);
+  if (classified.kind === "ignore") return classified.result;
   const port = createGitLabPort({
     apiUrl: config2.apiUrl,
-    projectId: String(event.project.id),
+    projectId: classified.projectId,
     token: config2.token,
     selfUsername: config2.selfUsername,
     warn: config2.warn
@@ -29608,7 +29630,7 @@ var handleGitLabEvent = async (body, config2) => {
     statusContext: config2.statusContext,
     reportMode: "update-only"
   });
-  const run2 = await gate.run({ owner: "", repo: "", number: event.object_attributes.iid });
+  const run2 = await gate.run({ owner: "", repo: "", number: classified.iid });
   return { status: 200, message: `merge-risk: ${run2.tier} (${run2.decision.state})` };
 };
 
@@ -29625,9 +29647,8 @@ var tokenMatches = (header, secret) => {
 };
 var PayloadTooLargeError = class extends Error {
 };
-var required3 = (name, value) => {
-  if (value === void 0 || value === "") throw new Error(`merge-risk: ${name} is required`);
-  return value;
+var logError = (error62) => {
+  console.error(error62 instanceof Error ? error62.message : String(error62));
 };
 var readSelfUsername2 = async (apiUrl, token) => {
   const res = await fetch(`${apiUrl}/user`, { headers: { "PRIVATE-TOKEN": token } });
@@ -29648,46 +29669,61 @@ var respond = (res, status, message) => {
   res.writeHead(status, { "content-type": "text/plain" });
   res.end(message);
 };
-var createHandler = (config2, secret) => async (req, res) => {
-  if (req.method !== "POST") {
-    respond(res, 405, "merge-risk: POST only");
-    return;
-  }
-  if (!tokenMatches(req.headers["x-gitlab-token"], secret)) {
-    respond(res, 401, "merge-risk: invalid token");
-    return;
-  }
-  let raw;
-  try {
-    raw = await readBody(req);
-  } catch (error62) {
-    if (error62 instanceof PayloadTooLargeError) respond(res, 413, "merge-risk: payload too large");
-    else respond(res, 400, "merge-risk: could not read request body");
-    return;
-  }
-  let parsedBody;
-  try {
-    parsedBody = JSON.parse(raw);
-  } catch {
-    respond(res, 400, "merge-risk: invalid JSON");
-    return;
-  }
-  try {
-    const result = await handleGitLabEvent(parsedBody, config2);
-    respond(res, result.status, result.message);
-  } catch (error62) {
-    console.error(error62 instanceof Error ? error62.message : String(error62));
-    respond(res, 500, "merge-risk: webhook error");
-  }
+var createSerialQueue = () => {
+  const chains = /* @__PURE__ */ new Map();
+  return (key, task) => {
+    const prev = chains.get(key) ?? Promise.resolve();
+    const next = prev.then(task).catch(logError).finally(() => {
+      if (chains.get(key) === next) chains.delete(key);
+    });
+    chains.set(key, next);
+  };
+};
+var createHandler = (config2, secret, runEvent = handleGitLabEvent) => {
+  const enqueue = createSerialQueue();
+  return async (req, res) => {
+    if (req.method !== "POST") {
+      respond(res, 405, "merge-risk: POST only");
+      return;
+    }
+    if (!tokenMatches(req.headers["x-gitlab-token"], secret)) {
+      respond(res, 401, "merge-risk: invalid token");
+      return;
+    }
+    let raw;
+    try {
+      raw = await readBody(req);
+    } catch (error62) {
+      if (error62 instanceof PayloadTooLargeError) respond(res, 413, "merge-risk: payload too large");
+      else respond(res, 400, "merge-risk: could not read request body");
+      return;
+    }
+    let parsedBody;
+    try {
+      parsedBody = JSON.parse(raw);
+    } catch {
+      respond(res, 400, "merge-risk: invalid JSON");
+      return;
+    }
+    const classified = classifyGitLabEvent(parsedBody);
+    if (classified.kind === "ignore") {
+      respond(res, classified.result.status, classified.result.message);
+      return;
+    }
+    respond(res, 202, `merge-risk: accepted, re-evaluating !${classified.iid}`);
+    enqueue(classified.key, async () => {
+      await runEvent(parsedBody, config2);
+    });
+  };
 };
 var runWebhookServer = async () => {
-  const apiUrl = required3("MERGE_RISK_API_URL", process.env["MERGE_RISK_API_URL"]);
-  const token = required3("MERGE_RISK_TOKEN", process.env["MERGE_RISK_TOKEN"]);
-  const secret = required3("MERGE_RISK_WEBHOOK_SECRET", process.env["MERGE_RISK_WEBHOOK_SECRET"]);
-  const policyPath = process.env["MERGE_RISK_POLICY"] ?? ".merge-risk.yml";
-  const statusContext = process.env["MERGE_RISK_STATUS_CONTEXT"] ?? "merge-risk";
-  const listenPort = Number(process.env["PORT"] ?? "3000");
-  if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) {
+  const apiUrl = required2("MERGE_RISK_API_URL", process.env["MERGE_RISK_API_URL"]);
+  const token = required2("MERGE_RISK_TOKEN", process.env["MERGE_RISK_TOKEN"]);
+  const secret = required2("MERGE_RISK_WEBHOOK_SECRET", process.env["MERGE_RISK_WEBHOOK_SECRET"]);
+  const policyPath = envOr("MERGE_RISK_POLICY", DEFAULT_POLICY_PATH);
+  const statusContext = envOr("MERGE_RISK_STATUS_CONTEXT", DEFAULT_STATUS_CONTEXT);
+  const listenPort = Number(envOr("PORT", "3000"));
+  if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
     throw new Error(
       `merge-risk: PORT must be a valid port number, got "${process.env["PORT"] ?? ""}"`
     );
@@ -29705,7 +29741,10 @@ var runWebhookServer = async () => {
   };
   const listener = createHandler(config2, secret);
   const server = createServer((req, res) => {
-    void listener(req, res);
+    void listener(req, res).catch((error62) => {
+      logError(error62);
+      if (!res.headersSent) respond(res, 500, "merge-risk: webhook error");
+    });
   });
   server.listen(listenPort, () => {
     console.log(`merge-risk: webhook listening on :${listenPort}`);

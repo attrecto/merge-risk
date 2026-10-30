@@ -1,4 +1,10 @@
-import { handleGitLabEvent, type WebhookConfig } from './webhook.ts'
+import { DEFAULT_POLICY_PATH, DEFAULT_STATUS_CONTEXT, envOr, required } from './env.ts'
+import {
+  classifyGitLabEvent,
+  handleGitLabEvent,
+  type WebhookConfig,
+  type WebhookResult,
+} from './webhook.ts'
 
 import { timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -19,9 +25,8 @@ const tokenMatches = (header: string | string[] | undefined, secret: string): bo
 
 class PayloadTooLargeError extends Error {}
 
-const required = (name: string, value: string | undefined): string => {
-  if (value === undefined || value === '') throw new Error(`merge-risk: ${name} is required`)
-  return value
+const logError = (error: unknown): void => {
+  console.error(error instanceof Error ? error.message : String(error))
 }
 
 const readSelfUsername = async (apiUrl: string, token: string): Promise<string> => {
@@ -48,13 +53,33 @@ const respond = (res: ServerResponse, status: number, message: string): void => 
   res.end(message)
 }
 
-// GitLab re-delivers a webhook on timeout/non-2xx, and the gate runs inline (several sequential API
-// calls) before responding, so a slow MR can be delivered twice. That is safe only because the gate is
-// idempotent — the commit status is keyed by head SHA and the report is update-if-changed — so a repeat
-// delivery re-converges rather than duplicating. Keep any side effect added here idempotent too.
-const createHandler =
-  (config: WebhookConfig, secret: string) =>
-  async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+// Run tasks for the same key strictly one after another, across the whole server's lifetime. GitLab
+// re-delivers on timeout and fires approval/unapproval in quick succession, so two deliveries for one
+// MR can arrive overlapping; serialising per MR makes the latest event's result always land last
+// instead of racing. Keys drop out of the map once their chain drains, so it can't grow unbounded.
+export const createSerialQueue = (): ((key: string, task: () => Promise<void>) => void) => {
+  const chains = new Map<string, Promise<void>>()
+  return (key, task) => {
+    const prev = chains.get(key) ?? Promise.resolve()
+    const next = prev
+      .then(task)
+      .catch(logError)
+      .finally(() => {
+        if (chains.get(key) === next) chains.delete(key)
+      })
+    chains.set(key, next)
+  }
+}
+
+export const createHandler = (
+  config: WebhookConfig,
+  secret: string,
+  // Injectable so a test can drive the ack-before-gate wiring without a live GitLab; defaults to the
+  // real gate run, which is what the server uses.
+  runEvent: (body: unknown, config: WebhookConfig) => Promise<WebhookResult> = handleGitLabEvent,
+): ((req: IncomingMessage, res: ServerResponse) => Promise<void>) => {
+  const enqueue = createSerialQueue()
+  return async (req, res) => {
     if (req.method !== 'POST') {
       respond(res, 405, 'merge-risk: POST only')
       return
@@ -80,14 +105,23 @@ const createHandler =
       respond(res, 400, 'merge-risk: invalid JSON')
       return
     }
-    try {
-      const result = await handleGitLabEvent(parsedBody, config)
-      respond(res, result.status, result.message)
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error))
-      respond(res, 500, 'merge-risk: webhook error')
+    const classified = classifyGitLabEvent(parsedBody)
+    // Ignored events (non-approval, non-MR, bad payload) need no gate run — reply with the reason now.
+    if (classified.kind === 'ignore') {
+      respond(res, classified.result.status, classified.result.message)
+      return
     }
+    // The gate makes several sequential GitLab calls, which on a large MR can exceed GitLab's ~10s
+    // webhook timeout. A timed-out delivery is marked failed, re-delivered (overlapping runs), and
+    // counts toward auto-disabling the hook. So ACK immediately and run the gate in the background,
+    // serialised per MR so a later event's result always lands last. The run is idempotent (status
+    // keyed by head SHA, report update-only), so a re-delivery that still slips through re-converges.
+    respond(res, 202, `merge-risk: accepted, re-evaluating !${classified.iid}`)
+    enqueue(classified.key, async () => {
+      await runEvent(parsedBody, config)
+    })
   }
+}
 
 // The PR-figyelő service: a tiny listener that re-runs the gate when an approval lands (which never
 // starts a pipeline), so the required check turns green without anyone re-running the CI job.
@@ -96,11 +130,12 @@ export const runWebhookServer = async (): Promise<void> => {
   const apiUrl = required('MERGE_RISK_API_URL', process.env['MERGE_RISK_API_URL'])
   const token = required('MERGE_RISK_TOKEN', process.env['MERGE_RISK_TOKEN'])
   const secret = required('MERGE_RISK_WEBHOOK_SECRET', process.env['MERGE_RISK_WEBHOOK_SECRET'])
-  const policyPath = process.env['MERGE_RISK_POLICY'] ?? '.merge-risk.yml'
-  const statusContext = process.env['MERGE_RISK_STATUS_CONTEXT'] ?? 'merge-risk'
-  const listenPort = Number(process.env['PORT'] ?? '3000')
-  // A typo'd PORT would otherwise be NaN → listen on a random port → a silently unreachable server.
-  if (!Number.isInteger(listenPort) || listenPort < 0 || listenPort > 65535) {
+  const policyPath = envOr('MERGE_RISK_POLICY', DEFAULT_POLICY_PATH)
+  const statusContext = envOr('MERGE_RISK_STATUS_CONTEXT', DEFAULT_STATUS_CONTEXT)
+  // envOr (not `??`) so an empty PORT falls back to 3000 instead of Number('') === 0 → a random,
+  // silently unreachable port. Require a real listen port (1..65535), rejecting a 0 or typo'd value.
+  const listenPort = Number(envOr('PORT', '3000'))
+  if (!Number.isInteger(listenPort) || listenPort < 1 || listenPort > 65535) {
     throw new Error(
       `merge-risk: PORT must be a valid port number, got "${process.env['PORT'] ?? ''}"`,
     )
@@ -119,7 +154,10 @@ export const runWebhookServer = async (): Promise<void> => {
   }
   const listener = createHandler(config, secret)
   const server = createServer((req, res) => {
-    void listener(req, res)
+    void listener(req, res).catch((error: unknown) => {
+      logError(error)
+      if (!res.headersSent) respond(res, 500, 'merge-risk: webhook error')
+    })
   })
   server.listen(listenPort, () => {
     console.log(`merge-risk: webhook listening on :${listenPort}`)

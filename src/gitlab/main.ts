@@ -1,20 +1,10 @@
 import { createGate } from '../core/run-gate.ts'
+import { DEFAULT_POLICY_PATH, DEFAULT_STATUS_CONTEXT, envOr, required } from './env.ts'
 import { createGitLabPort } from './gitlab-port.ts'
 
 import { z } from 'zod'
 
 const userSchema = z.object({ username: z.string() })
-
-const required = (name: string, value: string | undefined): string => {
-  if (value === undefined || value === '') throw new Error(`merge-risk: ${name} is required`)
-  return value
-}
-
-// A defined-but-empty CI variable falls back to the default (an empty env var is "unset" to us).
-const envOr = (name: string, fallback: string): string => {
-  const value = process.env[name]
-  return value === undefined || value === '' ? fallback : value
-}
 
 // Learn the token's own username so the gate recognises its own report note under any token.
 const readSelfUsername = async (apiUrl: string, token: string): Promise<string> => {
@@ -41,10 +31,8 @@ export const runGitLabGate = async (): Promise<void> => {
     envOr('CI_MERGE_REQUEST_PROJECT_ID', process.env['CI_PROJECT_ID'] ?? ''),
   )
   const token = required('MERGE_RISK_TOKEN', process.env['MERGE_RISK_TOKEN'])
-  const policyPath = envOr('MERGE_RISK_POLICY', '.merge-risk.yml')
-  // Default must NOT collide with the job name: GitLab already posts a commit status named after the
-  // job, so a second status of the same name 400s "name has already been taken" and never appears.
-  const statusContext = envOr('MERGE_RISK_STATUS_CONTEXT', 'merge-risk-verdict')
+  const policyPath = envOr('MERGE_RISK_POLICY', DEFAULT_POLICY_PATH)
+  const statusContext = envOr('MERGE_RISK_STATUS_CONTEXT', DEFAULT_STATUS_CONTEXT)
 
   const selfUsername = await readSelfUsername(apiUrl, token)
   const port = createGitLabPort({
